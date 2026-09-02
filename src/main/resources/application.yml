@@ -1,0 +1,14 @@
+spring:
+  application:
+    name: tpross
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:${DB_PORT:5432}/${DB_NAME:tpross}}
+    username: ${DB_USERNAME:tpross}
+    password: ${DB_PASSWORD:tpross}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none
+
+server:
+  port: ${SERVER_PORT:8080}
