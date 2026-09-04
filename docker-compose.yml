@@ -3,8 +3,8 @@ services:
     image: postgres:17
     environment:
       POSTGRES_DB: ${DB_NAME:-tpross}
-      POSTGRES_USER: ${DB_USERNAME:-tpross}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-tpross}
+      POSTGRES_USER: ${DB_USERNAME:?Set DB_USERNAME in .env or your shell}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env or your shell}
     ports:
       - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:

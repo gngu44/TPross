@@ -1,0 +1,12 @@
+spring:
+  jpa:
+    hibernate:
+      # Local development only; use migrations for shared environments.
+      ddl-auto: update
+    properties:
+      hibernate:
+        format_sql: true
+
+logging:
+  level:
+    org.hibernate.SQL: DEBUG

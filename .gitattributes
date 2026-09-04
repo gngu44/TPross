@@ -1,0 +1,2 @@
+# Treat PDF guides as binary documents rather than text diffs.
+*.pdf binary
