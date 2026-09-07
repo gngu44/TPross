@@ -137,14 +137,59 @@ The PostgreSQL driver and Hibernate dialect are inferred from the connection.
 
 The base configuration keeps schema generation disabled (`ddl-auto: none`) and
 Open Session in View disabled. The explicit `local` profile enables Hibernate's
-`ddl-auto: update` and formatted SQL logging through `org.hibernate.SQL`. Future
-entities can have their tables created/updated locally; with no entities, there
-are no application tables to create. Use versioned migrations for shared environments.
+`ddl-auto: update` and formatted SQL logging through `org.hibernate.SQL`. Hibernate
+creates the `users`, `accounts`, and `transactions` tables locally from the entity
+mappings. Use versioned migrations for shared environments; `update` is not a
+replacement for migrations, especially when changing constraints on existing tables.
 See [Spring Boot's Hibernate initialization documentation](https://docs.spring.io/spring-boot/3.5/how-to/data-initialization.html).
 
-There are no entities, schema migrations, or business features yet. Security permits
+The initial LedgerFlow entities and repositories are implemented. There are no schema
+migrations or transfer services yet. Security permits
 only `GET /api/health`, denies other routes with HTTP 403, and leaves CSRF protection
 enabled. Authentication is not implemented; form login and HTTP Basic are disabled.
+
+## LedgerFlow domain model
+
+Models remain in `com.tpross.model`; the project/package name has not changed.
+
+| Entity | Fields and defaults |
+| --- | --- |
+| `User` | Generated `Long` ID, email, password hash, creation timestamp |
+| `Account` | Generated `Long` ID, owning user, `BigDecimal` balance (initially `0.00`), creation timestamp |
+| `Transaction` | Generated `Long` ID, source and destination accounts, `BigDecimal` amount, status (initially `PENDING`), creation timestamp |
+
+- `Account.user` is a required, lazy `@ManyToOne`: one user may own multiple accounts.
+- Both transaction account references are required, lazy `@ManyToOne`: each account
+  may participate in multiple incoming and outgoing transactions. Transfers between
+  different accounts belonging to the same user are allowed.
+- Relationships are unidirectional. No parent-side collections or cascading deletes
+  are added. Foreign keys reject deletion of a user with accounts or an account
+  referenced by transactions. Foreign-key columns are indexed for future lookups.
+- Tables use plural names to avoid collisions with SQL identifiers such as `user`.
+- All requested fields are non-null in the database. Email has a unique constraint
+  and a 254-character limit; Bean Validation checks its format and rejects blanks.
+  Uniqueness currently uses exact, case-sensitive values; email normalization is not
+  implemented. Password hashes are nonblank, at most 255 characters, and excluded
+  from Jackson JSON serialization. The model does not generate hashes or implement login.
+- Money is stored as PostgreSQL `NUMERIC(19,2)` (17 integer digits and two fractional
+  digits). Bean Validation rejects extra fractional digits or excessive precision
+  before ORM persistence. This initial model assumes a single currency with two decimal
+  places; no currency code or conversion is modeled.
+- Balances must be nonnegative (no overdrafts); amounts must be positive (minimum
+  `0.01`). Database checks enforce these rules and reject identical source/destination
+  account IDs, including writes made outside JPA. PostgreSQL itself can round extra
+  fractional digits supplied through direct SQL; the precision rejection is at the
+  Bean Validation layer.
+- `TransactionStatus` is stored by name (`PENDING`, `COMPLETED`, `FAILED`), so enum
+  reordering does not change stored meanings. Status transition rules are not implemented.
+- `createdAt` uses `Instant`, is assigned by `@PrePersist`, and is not updatable through
+  JPA. Account ownership and transaction account/amount fields are also not updatable
+  through JPA; these are mapping restrictions, not database triggers.
+
+`UserRepository`, `AccountRepository`, and `TransactionRepository` extend
+`JpaRepository<Entity, Long>` to provide standard persistence operations. Saving a
+transaction does **not** debit/credit accounts. Atomic transfers, concurrent balance
+updates, idempotency, and authentication will require later service-layer work.
 
 ## Build and test
 
@@ -153,9 +198,22 @@ enabled. Authentication is not implemented; form login and HTTP Basic are disabl
 java -jar target/tpross-0.0.1-SNAPSHOT.jar --spring.profiles.active=local
 ```
 
-Tests exercise the health response and security filters using JUnit 5 and MockMvc.
-They do not require a database. Running the packaged application requires PostgreSQL
-and the exported connection variables described above.
+The default tests cover the health endpoint, security filters, monetary/input
+validation, and password-hash serialization. They do not require a database.
+Running the packaged application requires PostgreSQL and the exported variables above.
+
+To also run the persistence integration tests with Docker running:
+
+```sh
+./mvnw verify -Ppostgres-integration
+```
+
+Testcontainers starts a disposable PostgreSQL 17 container and supplies its connection
+settings; `.env` and the Compose database are not used. Failsafe runs `DomainPersistenceIT`
+to verify relationships, exact monetary values, timestamps, status storage, unique
+email, foreign keys, and database check constraints. Test tables are created/dropped
+only inside that disposable database. The integration profile requires Docker and
+fails if it is unavailable.
 
 ## Files and packages
 
@@ -177,9 +235,14 @@ All Java packages are under `com.tpross`.
 | `src/main/java/com/tpross/dto/HealthResponse.java` | Immutable JSON response with a `status` field |
 | `src/main/java/com/tpross/security/SecurityConfig.java` | Initial route access policy |
 | `src/main/java/com/tpross/service/package-info.java` | Placeholder/documentation for future business services |
-| `src/main/java/com/tpross/repository/package-info.java` | Placeholder/documentation for future persistence repositories |
-| `src/main/java/com/tpross/model/package-info.java` | Placeholder/documentation for future domain models and entities |
+| `src/main/java/com/tpross/repository/package-info.java` | Repository package documentation |
+| `src/main/java/com/tpross/repository/{User,Account,Transaction}Repository.java` | Spring Data JPA repositories for each entity |
+| `src/main/java/com/tpross/model/package-info.java` | Model package documentation |
+| `src/main/java/com/tpross/model/{User,Account,Transaction}.java` | Initial LedgerFlow persistence entities |
+| `src/main/java/com/tpross/model/TransactionStatus.java` | Named transaction statuses |
 | `src/main/java/com/tpross/exception/package-info.java` | Placeholder/documentation for future exceptions and handlers |
 | `src/main/java/com/tpross/config/package-info.java` | Placeholder/documentation for future general configuration |
 | `src/test/java/com/tpross/controller/HealthControllerTest.java` | Health endpoint and route access tests |
+| `src/test/java/com/tpross/model/DomainValidationTest.java` | Validation and password-hash serialization tests |
+| `src/test/java/com/tpross/repository/DomainPersistenceIT.java` | PostgreSQL persistence/constraint integration tests |
 | `README.md` | Setup, configuration, run commands, and file reference (updated) |
