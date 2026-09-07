@@ -10,3 +10,7 @@ spring:
 logging:
   level:
     org.hibernate.SQL: DEBUG
+
+app:
+  accounts:
+    starting-balance: ${DEV_STARTING_BALANCE:1000.00}

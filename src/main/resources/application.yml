@@ -1,6 +1,9 @@
 spring:
   application:
     name: tpross
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
   datasource:
     url: ${DB_URL}
     username: ${DB_USERNAME}
@@ -16,3 +19,7 @@ spring:
 
 server:
   port: ${SERVER_PORT:8080}
+
+app:
+  accounts:
+    starting-balance: 0.00
