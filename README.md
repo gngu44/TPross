@@ -130,6 +130,7 @@ remains in the named Docker volume.
 | `DB_PORT` | `5432` | Compose host port; keep consistent with `DB_URL` |
 | `DB_NAME` | `tpross` | Compose database name; keep consistent with `DB_URL` |
 | `SERVER_PORT` | `8080` | HTTP port |
+| `DEV_STARTING_BALANCE` | `1000.00` | Starting balance for new accounts in the `local` profile; base configuration uses `0.00` |
 
 When using an existing PostgreSQL instance, create its database/user first, set
 the three required connection variables, and skip the Compose startup command.
@@ -143,19 +144,43 @@ mappings. Use versioned migrations for shared environments; `update` is not a
 replacement for migrations, especially when changing constraints on existing tables.
 See [Spring Boot's Hibernate initialization documentation](https://docs.spring.io/spring-boot/3.5/how-to/data-initialization.html).
 
-The initial LedgerFlow entities and repositories are implemented. There are no schema
-migrations or transfer services yet. Security permits
-only `GET /api/health`, denies other routes with HTTP 403, and leaves CSRF protection
-enabled. Authentication is not implemented; form login and HTTP Basic are disabled.
+The initial TPross entities, repositories, and user/account APIs are implemented.
+There are no schema migrations or transfer services yet. Security permits the health
+endpoint and the three API routes below. The creation routes are exempt from CSRF
+checks for public development API access; other routes are denied. Authentication
+is not implemented; form login and HTTP Basic are disabled.
 
-## LedgerFlow domain model
+## User and account REST APIs
 
-Models remain in `com.tpross.model`; the project/package name has not changed.
+| Method | Path | Result |
+| --- | --- | --- |
+| POST | `/api/users` | 201, public user DTO; request contains email and password |
+| POST | `/api/users/{userId}/accounts` | 201, account DTO and Location header; no body or `{}` |
+| GET | `/api/accounts/{accountId}` | 200, account DTO |
+
+Controllers call transactional services, which use repositories. Input DTOs are
+validated and unknown fields are rejected. User creation normalizes email and stores
+a salted PBKDF2 hash; passwords and hashes are never returned. Account responses
+contain `id`, `userId`, `balance`, and `createdAt` instead of JPA entities.
+
+The local profile initializes new accounts from `DEV_STARTING_BALANCE` (default
+`1000.00`). Outside that profile, the configured default is `0.00`. Starting balances
+must be nonnegative and fit `NUMERIC(19,2)`; invalid configuration fails startup.
+The setting never rewrites existing balances. Clients cannot set balances.
+
+Central `@ControllerAdvice` produces structured Problem Details responses: 400 for
+invalid input, 404 for missing resources, and 409 for duplicate emails or data conflicts.
+See [API usage and Postman examples](postman/README.md), or import the
+[Postman collection](postman/TPross.postman_collection.json).
+
+## TPross domain model
+
+TPross domain models are in `com.tpross.model`.
 
 | Entity | Fields and defaults |
 | --- | --- |
 | `User` | Generated `Long` ID, email, password hash, creation timestamp |
-| `Account` | Generated `Long` ID, owning user, `BigDecimal` balance (initially `0.00`), creation timestamp |
+| `Account` | Generated `Long` ID, owning user, `BigDecimal` balance (entity default `0.00`; API uses configured starting balance), creation timestamp |
 | `Transaction` | Generated `Long` ID, source and destination accounts, `BigDecimal` amount, status (initially `PENDING`), creation timestamp |
 
 - `Account.user` is a required, lazy `@ManyToOne`: one user may own multiple accounts.
@@ -168,9 +193,10 @@ Models remain in `com.tpross.model`; the project/package name has not changed.
 - Tables use plural names to avoid collisions with SQL identifiers such as `user`.
 - All requested fields are non-null in the database. Email has a unique constraint
   and a 254-character limit; Bean Validation checks its format and rejects blanks.
-  Uniqueness currently uses exact, case-sensitive values; email normalization is not
-  implemented. Password hashes are nonblank, at most 255 characters, and excluded
-  from Jackson JSON serialization. The model does not generate hashes or implement login.
+  Database uniqueness uses exact, case-sensitive values. The REST API additionally
+  trims/lowercases emails and checks for duplicates without regard to case. Password
+  hashes are nonblank, at most 255 characters, and excluded from Jackson JSON
+  serialization. The user service generates hashes; login is not implemented.
 - Money is stored as PostgreSQL `NUMERIC(19,2)` (17 integer digits and two fractional
   digits). Bean Validation rejects extra fractional digits or excessive precision
   before ORM persistence. This initial model assumes a single currency with two decimal
@@ -198,8 +224,9 @@ updates, idempotency, and authentication will require later service-layer work.
 java -jar target/tpross-0.0.1-SNAPSHOT.jar --spring.profiles.active=local
 ```
 
-The default tests cover the health endpoint, security filters, monetary/input
-validation, and password-hash serialization. They do not require a database.
+The default tests cover health and user/account HTTP contracts, security filters,
+configuration validation, monetary/input validation, and password-hash serialization.
+They do not require a database.
 Running the packaged application requires PostgreSQL and the exported variables above.
 
 To also run the persistence integration tests with Docker running:
@@ -210,10 +237,9 @@ To also run the persistence integration tests with Docker running:
 
 Testcontainers starts a disposable PostgreSQL 17 container and supplies its connection
 settings; `.env` and the Compose database are not used. Failsafe runs `DomainPersistenceIT`
-to verify relationships, exact monetary values, timestamps, status storage, unique
-email, foreign keys, and database check constraints. Test tables are created/dropped
-only inside that disposable database. The integration profile requires Docker and
-fails if it is unavailable.
+and `UserAccountApiIT` to verify persistence constraints and the complete user/account
+API flow against PostgreSQL. Test tables are created/dropped only inside disposable
+databases. The integration profile requires Docker and fails if it is unavailable.
 
 ## Files and packages
 
@@ -234,15 +260,25 @@ All Java packages are under `com.tpross`.
 | `src/main/java/com/tpross/controller/HealthController.java` | Public `GET /api/health` endpoint |
 | `src/main/java/com/tpross/dto/HealthResponse.java` | Immutable JSON response with a `status` field |
 | `src/main/java/com/tpross/security/SecurityConfig.java` | Initial route access policy |
-| `src/main/java/com/tpross/service/package-info.java` | Placeholder/documentation for future business services |
+| `src/main/java/com/tpross/controller/{User,Account}Controller.java` | User/account REST endpoints |
+| `src/main/java/com/tpross/dto/{CreateUserRequest,CreateAccountRequest,UserResponse,AccountResponse}.java` | Validated input and public output contracts |
+| `src/main/java/com/tpross/service/{User,Account}Service.java` | Transactional user/account operations |
+| `src/main/java/com/tpross/service/package-info.java` | Service package documentation |
 | `src/main/java/com/tpross/repository/package-info.java` | Repository package documentation |
 | `src/main/java/com/tpross/repository/{User,Account,Transaction}Repository.java` | Spring Data JPA repositories for each entity |
 | `src/main/java/com/tpross/model/package-info.java` | Model package documentation |
-| `src/main/java/com/tpross/model/{User,Account,Transaction}.java` | Initial LedgerFlow persistence entities |
+| `src/main/java/com/tpross/model/{User,Account,Transaction}.java` | Initial TPross persistence entities |
 | `src/main/java/com/tpross/model/TransactionStatus.java` | Named transaction statuses |
-| `src/main/java/com/tpross/exception/package-info.java` | Placeholder/documentation for future exceptions and handlers |
-| `src/main/java/com/tpross/config/package-info.java` | Placeholder/documentation for future general configuration |
+| `src/main/java/com/tpross/exception/{ApiExceptionHandler,ResourceNotFoundException,DuplicateEmailException}.java` | Centralized API errors |
+| `src/main/java/com/tpross/exception/package-info.java` | Exception package documentation |
+| `src/main/java/com/tpross/config/{ApplicationConfig,AccountProperties}.java` | Password encoder and validated account settings |
+| `src/main/java/com/tpross/config/package-info.java` | Configuration package documentation |
 | `src/test/java/com/tpross/controller/HealthControllerTest.java` | Health endpoint and route access tests |
 | `src/test/java/com/tpross/model/DomainValidationTest.java` | Validation and password-hash serialization tests |
 | `src/test/java/com/tpross/repository/DomainPersistenceIT.java` | PostgreSQL persistence/constraint integration tests |
+| `src/test/java/com/tpross/controller/UserAccountControllerTest.java` | User/account HTTP contract and error tests |
+| `src/test/java/com/tpross/controller/UserAccountApiIT.java` | Full API flow against disposable PostgreSQL |
+| `src/test/java/com/tpross/config/AccountPropertiesTest.java` | Starting-balance configuration validation |
+| `postman/README.md` | Endpoint documentation and Postman examples |
+| `postman/TPross.postman_collection.json` | Importable Postman requests with automatic ID capture |
 | `README.md` | Setup, configuration, run commands, and file reference (updated) |
