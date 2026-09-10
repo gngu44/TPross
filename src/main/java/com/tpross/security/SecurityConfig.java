@@ -17,7 +17,10 @@ public class SecurityConfig {
         return http
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(HttpMethod.GET, "/api/health").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/users", "/api/users/*/accounts").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/accounts/*").permitAll()
                         .anyRequest().denyAll())
+                .csrf(csrf -> csrf.ignoringRequestMatchers("/api/users", "/api/users/*/accounts"))
                 .formLogin(AbstractHttpConfigurer::disable)
                 .httpBasic(AbstractHttpConfigurer::disable)
                 .logout(AbstractHttpConfigurer::disable)
