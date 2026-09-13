@@ -2,6 +2,7 @@ package com.tpross.controller;
 
 import com.tpross.dto.CreateTransferRequest;
 import com.tpross.dto.TransferResponse;
+import com.tpross.service.TransferService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -15,9 +16,14 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/transfers")
 public class TransferController {
 
+    private final TransferService transfers;
+
+    public TransferController(TransferService transfers) {
+        this.transfers = transfers;
+    }
+
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<TransferResponse> createTransfer(@Valid @RequestBody CreateTransferRequest request) {
-        // Transfer processing is introduced in the next implementation step.
-        return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).build();
+        return ResponseEntity.status(HttpStatus.CREATED).body(transfers.createTransfer(request));
     }
 }

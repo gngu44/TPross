@@ -29,6 +29,16 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger LOG = LoggerFactory.getLogger(ApiExceptionHandler.class);
 
+    @ExceptionHandler(InvalidTransferException.class)
+    public ResponseEntity<Object> handleInvalidTransfer(InvalidTransferException exception, WebRequest request) {
+        return problem(HttpStatus.BAD_REQUEST, exception.getMessage(), request);
+    }
+
+    @ExceptionHandler(TransferConflictException.class)
+    public ResponseEntity<Object> handleTransferConflict(TransferConflictException exception, WebRequest request) {
+        return problem(HttpStatus.CONFLICT, exception.getMessage(), request);
+    }
+
     @ExceptionHandler(ResourceNotFoundException.class)
     public ResponseEntity<Object> handleNotFound(ResourceNotFoundException exception, WebRequest request) {
         return problem(HttpStatus.NOT_FOUND, exception.getMessage(), request);
