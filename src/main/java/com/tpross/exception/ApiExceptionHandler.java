@@ -4,6 +4,7 @@ import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -37,6 +38,11 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(TransferConflictException.class)
     public ResponseEntity<Object> handleTransferConflict(TransferConflictException exception, WebRequest request) {
         return problem(HttpStatus.CONFLICT, exception.getMessage(), request);
+    }
+
+    @ExceptionHandler(PessimisticLockingFailureException.class)
+    public ResponseEntity<Object> handleLockConflict(PessimisticLockingFailureException exception, WebRequest request) {
+        return problem(HttpStatus.CONFLICT, "Request conflicts with a concurrent account update.", request);
     }
 
     @ExceptionHandler(ResourceNotFoundException.class)

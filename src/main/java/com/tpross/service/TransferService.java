@@ -38,8 +38,11 @@ public class TransferService {
             throw new InvalidTransferException();
         }
 
-        Account source = findAccount(request.sourceAccountId());
-        Account destination = findAccount(request.destinationAccountId());
+        // Every transfer takes locks in the same order, including opposite-direction transfers.
+        Account first = lockAccount(Math.min(request.sourceAccountId(), request.destinationAccountId()));
+        Account second = lockAccount(Math.max(request.sourceAccountId(), request.destinationAccountId()));
+        Account source = first.getId().equals(request.sourceAccountId()) ? first : second;
+        Account destination = first.getId().equals(request.destinationAccountId()) ? first : second;
         BigDecimal amount = request.amount().setScale(2);
 
         if (source.getBalance().compareTo(amount) < 0) {
@@ -61,8 +64,8 @@ public class TransferService {
                 saved.getAmount(), saved.getStatus(), saved.getCreatedAt());
     }
 
-    private Account findAccount(Long id) {
-        return accounts.findById(id)
+    private Account lockAccount(Long id) {
+        return accounts.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Account", id));
     }
 }
