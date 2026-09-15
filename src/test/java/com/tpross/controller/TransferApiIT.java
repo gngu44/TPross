@@ -3,7 +3,9 @@ package com.tpross.controller;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tpross.dto.CreateTransferRequest;
+import com.tpross.exception.TransferConflictException;
 import com.tpross.model.Account;
+import com.tpross.model.Transaction;
 import com.tpross.model.User;
 import com.tpross.repository.AccountRepository;
 import com.tpross.repository.TransactionRepository;
@@ -21,16 +23,29 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.math.BigDecimal;
+import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -63,6 +78,8 @@ class TransferApiIT {
     @Autowired
     private JdbcTemplate jdbc;
     @Autowired
+    private PlatformTransactionManager transactionManager;
+    @MockitoSpyBean
     private TransactionRepository transactions;
 
     @BeforeEach
@@ -163,6 +180,91 @@ class TransferApiIT {
                 .isInstanceOf(ConstraintViolationException.class);
         assertBalances(source, "10.00", destination, "0.00");
         assertThat(transactions.count()).isZero();
+    }
+
+    @Test
+    void runtimeFailureAfterSqlFlushRollsBackBothBalancesAndTransaction() throws Exception {
+        Account source = account("100.00");
+        Account destination = account("20.00");
+        doAnswer(invocation -> {
+            Transaction saved = (Transaction) invocation.callRealMethod();
+            // The real INSERT and both UPDATEs have reached PostgreSQL in the open transaction.
+            assertBalances(source, "75.00", destination, "45.00");
+            assertThat(jdbc.queryForObject("select count(*) from transactions", Long.class)).isEqualTo(1);
+            throw new IllegalStateException("Simulated failure after SQL flush, transaction " + saved.getId());
+        }).when(transactions).saveAndFlush(any(Transaction.class));
+
+        mvc.perform(post("/api/transfers").contentType(MediaType.APPLICATION_JSON)
+                        .content(json(source, destination, "25.00")))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.detail").value("An unexpected error occurred."));
+        // These reads happen after the request transaction has rolled back.
+        assertBalances(source, "100.00", destination, "20.00");
+        assertThat(transactions.count()).isZero();
+    }
+
+    @Test
+    void simultaneousDebitsCannotSpendTheSameFundsTwice() throws Exception {
+        Account source = account("100.00");
+        Account firstDestination = account("0.00");
+        Account secondDestination = account("0.00");
+        List<Integer> results = concurrentTransfers(source, request(source, firstDestination, "80.00"),
+                request(source, secondDestination, "80.00"));
+        assertThat(results).containsExactlyInAnyOrder(201, 409);
+        assertThat(balance(source)).isEqualByComparingTo("20.00");
+        assertThat(balance(firstDestination).add(balance(secondDestination))).isEqualByComparingTo("80.00");
+        assertThat(transactions.count()).isEqualTo(1);
+    }
+
+    @Test
+    void simultaneousCreditsDoNotLoseAnUpdate() throws Exception {
+        Account destination = account("0.00");
+        Account firstSource = account("100.00");
+        Account secondSource = account("100.00");
+        assertThat(concurrentTransfers(destination, request(firstSource, destination, "80.00"),
+                request(secondSource, destination, "80.00"))).containsExactly(201, 201);
+        assertBalances(firstSource, "20.00", secondSource, "20.00");
+        assertThat(balance(destination)).isEqualByComparingTo("160.00");
+        assertThat(transactions.count()).isEqualTo(2);
+    }
+
+    @Test
+    void oppositeDirectionTransfersCompleteWithoutDeadlocking() throws Exception {
+        Account first = account("100.00");
+        Account second = account("100.00");
+        assertThat(concurrentTransfers(first, request(first, second, "10.00"),
+                request(second, first, "20.00"))).containsExactly(201, 201);
+        assertBalances(first, "110.00", second, "90.00");
+        assertThat(transactions.count()).isEqualTo(2);
+    }
+
+    private List<Integer> concurrentTransfers(Account lock, CreateTransferRequest first,
+            CreateTransferRequest second) throws Exception {
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            List<Future<Integer>> futures = new TransactionTemplate(transactionManager).execute(status -> {
+                accounts.findByIdForUpdate(lock.getId()).orElseThrow();
+                List<Future<Integer>> pending = List.of(executor.submit(transferTask(first)),
+                        executor.submit(transferTask(second)));
+                // Prove both operations actually contend for row locks before releasing the blocker.
+                await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertThat(jdbc.queryForObject("""
+                        select count(*) from pg_stat_activity
+                        where datname = current_database() and wait_event_type = 'Lock' and state = 'active'
+                        """, Long.class)).isGreaterThanOrEqualTo(2));
+                return pending;
+            });
+            return List.of(futures.get(0).get(15, TimeUnit.SECONDS), futures.get(1).get(15, TimeUnit.SECONDS));
+        }
+    }
+
+    private Callable<Integer> transferTask(CreateTransferRequest request) {
+        return () -> {
+            try {
+                transfers.createTransfer(request);
+                return 201;
+            } catch (TransferConflictException exception) {
+                return 409;
+            }
+        };
     }
 
     private Account account(String balance) {
