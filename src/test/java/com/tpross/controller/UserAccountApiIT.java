@@ -29,8 +29,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+// Container disposal removes the schema; avoid shutdown DDL after PostgreSQL has stopped.
 @SpringBootTest(properties = {
-        "spring.jpa.hibernate.ddl-auto=create-drop",
+        "spring.jpa.hibernate.ddl-auto=create",
         "app.accounts.starting-balance=4321.09"
 })
 @AutoConfigureMockMvc

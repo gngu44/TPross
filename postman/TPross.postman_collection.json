@@ -1,7 +1,7 @@
 {
   "info": {
-    "name": "TPross - Users and Accounts",
-    "description": "Public development endpoints. Start with the local Spring profile. Run in order; response scripts capture IDs. Change email when creating another user.",
+    "name": "TPross - Users, Accounts and Transfers",
+    "description": "Public development endpoints without authentication. Start with the local Spring profile. Run in order; scripts capture IDs. Use fresh sender and recipient emails. Repeating a successful transfer moves money again.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -30,6 +30,31 @@
     },
     {
       "key": "accountId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "recipientEmail",
+      "value": "bob@example.com",
+      "type": "string"
+    },
+    {
+      "key": "destinationUserId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "destinationAccountId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "amount",
+      "value": "25.50",
+      "type": "string"
+    },
+    {
+      "key": "transactionId",
       "value": "",
       "type": "string"
     }
@@ -151,6 +176,145 @@
             "type": "text/javascript",
             "exec": [
               "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Create recipient user",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/users",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "users"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{recipientEmail}}\",\n  \"password\": \"{{password}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', function () { pm.response.to.have.status(201); });",
+              "if (pm.response.code === 201) {",
+              "  pm.collectionVariables.set('destinationUserId', String(pm.response.json().id));",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Create recipient account",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/users/{{destinationUserId}}/accounts",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "users",
+            "{{destinationUserId}}",
+            "accounts"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', function () { pm.response.to.have.status(201); });",
+              "if (pm.response.code === 201) {",
+              "  pm.collectionVariables.set('destinationAccountId', String(pm.response.json().id));",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Transfer money",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/transfers",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "transfers"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"sourceAccountId\": {{accountId}},\n  \"destinationAccountId\": {{destinationAccountId}},\n  \"amount\": {{amount}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', function () { pm.response.to.have.status(201); });",
+              "if (pm.response.code === 201) {",
+              "  const transfer = pm.response.json();",
+              "  pm.collectionVariables.set('transactionId', String(transfer.transactionId));",
+              "  pm.test('Transfer completed', function () { pm.expect(transfer.status).to.eql('COMPLETED'); });",
+              "}"
             ]
           }
         }

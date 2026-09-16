@@ -25,7 +25,8 @@ import java.time.Instant;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@DataJpaTest(properties = "spring.jpa.hibernate.ddl-auto=create-drop")
+// Container disposal removes the schema; avoid shutdown DDL after PostgreSQL has stopped.
+@DataJpaTest(properties = "spring.jpa.hibernate.ddl-auto=create")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Testcontainers
 class DomainPersistenceIT {

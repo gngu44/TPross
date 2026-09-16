@@ -144,19 +144,20 @@ mappings. Use versioned migrations for shared environments; `update` is not a
 replacement for migrations, especially when changing constraints on existing tables.
 See [Spring Boot's Hibernate initialization documentation](https://docs.spring.io/spring-boot/3.5/how-to/data-initialization.html).
 
-The initial TPross entities, repositories, and user/account APIs are implemented.
-There are no schema migrations or transfer services yet. Security permits the health
-endpoint and the three API routes below. The creation routes are exempt from CSRF
+The TPross entities, repositories, user/account APIs, and atomic transfers are implemented.
+There are no schema migrations yet. Security permits the health
+endpoint and the four API routes below. The creation routes are exempt from CSRF
 checks for public development API access; other routes are denied. Authentication
 is not implemented; form login and HTTP Basic are disabled.
 
-## User and account REST APIs
+## User, account, and transfer REST APIs
 
 | Method | Path | Result |
 | --- | --- | --- |
 | POST | `/api/users` | 201, public user DTO; request contains email and password |
 | POST | `/api/users/{userId}/accounts` | 201, account DTO and Location header; no body or `{}` |
 | GET | `/api/accounts/{accountId}` | 200, account DTO |
+| POST | `/api/transfers` | 201, completed transfer DTO |
 
 Controllers call transactional services, which use repositories. Input DTOs are
 validated and unknown fields are rejected. User creation normalizes email and stores
@@ -172,6 +173,69 @@ Central `@ControllerAdvice` produces structured Problem Details responses: 400 f
 invalid input, 404 for missing resources, and 409 for duplicate emails or data conflicts.
 See [API usage and Postman examples](postman/README.md), or import the
 [Postman collection](postman/TPross.postman_collection.json).
+
+## Atomic peer-to-peer transfers
+
+Send `POST /api/transfers` with `Content-Type: application/json`:
+
+```json
+{
+  "sourceAccountId": 1,
+  "destinationAccountId": 2,
+  "amount": 25.50
+}
+```
+
+Use IDs from existing accounts. Example `201 Created` response:
+
+```json
+{
+  "transactionId": 1,
+  "sourceAccountId": 1,
+  "destinationAccountId": 2,
+  "amount": 25.50,
+  "status": "COMPLETED",
+  "timestamp": "2026-10-01T12:00:00Z"
+}
+```
+
+The DTO identifies the accounts by ID and does not expose JPA entities. The timestamp
+is the transaction's `createdAt` instant. Account IDs must be positive integers;
+fractional IDs are rejected instead of truncated. Amounts use `BigDecimal`, must be
+at least `0.01`, and may have at most two fractional digits and 17 integer digits.
+The accounts must differ, both must exist, and the source must have sufficient funds.
+Spending the exact balance is allowed. Transfers between two accounts of the same user
+are also allowed. A destination balance exceeding `NUMERIC(19,2)` is rejected.
+
+`TransferService.createTransfer` uses Spring's
+`@Transactional(rollbackFor = Exception.class)`. Account lookups, the debit, the
+credit, and the `COMPLETED` Transaction insert share one database transaction.
+JPA dirty checking persists the managed account changes; `saveAndFlush` writes the
+transaction and pending balance changes, but **flush is not commit**. Spring commits
+after the service method succeeds, before the controller sends its success response.
+
+If an exception escapes during this operation, Spring rolls back the entire unit of
+work: neither balance change nor the transaction record remains committed, even if
+SQL has already executed. No `FAILED` record is saved separately. Runtime exceptions
+and errors trigger rollback by default; `rollbackFor = Exception.class` explicitly
+includes checked exceptions too. The service does not catch and suppress failures;
+the controller advice translates them into HTTP errors after rollback. A failure after
+a successful commit, such as losing the HTTP response, cannot undo that commit.
+See [Spring's rollback rules](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/rolling-back.html).
+
+Atomicity alone does not prevent concurrent requests from reading the same old balance.
+The repository uses `PESSIMISTIC_WRITE` to lock both rows **in ascending account-ID
+order** before checking funds. Locks last until commit or rollback. Competing transfers
+wait, then use the current balances; a consistent order avoids opposite-direction
+transfers acquiring these locks in conflicting orders. Future balance-writing code
+must follow the same locking protocol. See [PostgreSQL row locks](https://www.postgresql.org/docs/17/explicit-locking.html#LOCKING-ROWS).
+
+Errors: `400` for invalid input or the same account, `404` for a missing account,
+`409` for insufficient funds, destination overflow, or a database locking conflict,
+and `500` for unexpected failures. All use the existing Problem Details handler.
+This remains a public development API without authentication or ownership authorization.
+Idempotency is not implemented: repeating a successful POST creates another transfer;
+do not blindly retry an ambiguous response or connection failure.
 
 ## TPross domain model
 
@@ -214,8 +278,9 @@ TPross domain models are in `com.tpross.model`.
 
 `UserRepository`, `AccountRepository`, and `TransactionRepository` extend
 `JpaRepository<Entity, Long>` to provide standard persistence operations. Saving a
-transaction does **not** debit/credit accounts. Atomic transfers, concurrent balance
-updates, idempotency, and authentication will require later service-layer work.
+transaction directly does **not** debit/credit accounts; `TransferService` coordinates
+those balance changes atomically with row locks. Idempotency and authentication are
+not implemented.
 
 ## Build and test
 
@@ -224,7 +289,7 @@ updates, idempotency, and authentication will require later service-layer work.
 java -jar target/tpross-0.0.1-SNAPSHOT.jar --spring.profiles.active=local
 ```
 
-The default tests cover health and user/account HTTP contracts, security filters,
+The default tests cover health, user/account, and transfer HTTP contracts, security filters,
 configuration validation, monetary/input validation, and password-hash serialization.
 They do not require a database.
 Running the packaged application requires PostgreSQL and the exported variables above.
@@ -236,9 +301,11 @@ To also run the persistence integration tests with Docker running:
 ```
 
 Testcontainers starts a disposable PostgreSQL 17 container and supplies its connection
-settings; `.env` and the Compose database are not used. Failsafe runs `DomainPersistenceIT`
-and `UserAccountApiIT` to verify persistence constraints and the complete user/account
-API flow against PostgreSQL. Test tables are created/dropped only inside disposable
+settings; `.env` and the Compose database are not used. Failsafe runs `DomainPersistenceIT`,
+`UserAccountApiIT`, and `TransferApiIT` to verify persistence constraints and API flows.
+Transfer tests verify rejection without writes, rollback after real SQL flushes,
+simultaneous debits/credits, and opposite-direction transfers under actual lock contention.
+Test tables are created/dropped only inside disposable
 databases. The integration profile requires Docker and fails if it is unavailable.
 
 ## Files and packages
@@ -261,8 +328,11 @@ All Java packages are under `com.tpross`.
 | `src/main/java/com/tpross/dto/HealthResponse.java` | Immutable JSON response with a `status` field |
 | `src/main/java/com/tpross/security/SecurityConfig.java` | Initial route access policy |
 | `src/main/java/com/tpross/controller/{User,Account}Controller.java` | User/account REST endpoints |
+| `src/main/java/com/tpross/controller/TransferController.java` | Public transfer creation endpoint |
+| `src/main/java/com/tpross/dto/{CreateTransferRequest,TransferResponse}.java` | Validated transfer input and public result |
 | `src/main/java/com/tpross/dto/{CreateUserRequest,CreateAccountRequest,UserResponse,AccountResponse}.java` | Validated input and public output contracts |
 | `src/main/java/com/tpross/service/{User,Account}Service.java` | Transactional user/account operations |
+| `src/main/java/com/tpross/service/TransferService.java` | Atomic debit, credit, and transaction recording with ordered row locks |
 | `src/main/java/com/tpross/service/package-info.java` | Service package documentation |
 | `src/main/java/com/tpross/repository/package-info.java` | Repository package documentation |
 | `src/main/java/com/tpross/repository/{User,Account,Transaction}Repository.java` | Spring Data JPA repositories for each entity |
@@ -270,6 +340,7 @@ All Java packages are under `com.tpross`.
 | `src/main/java/com/tpross/model/{User,Account,Transaction}.java` | Initial TPross persistence entities |
 | `src/main/java/com/tpross/model/TransactionStatus.java` | Named transaction statuses |
 | `src/main/java/com/tpross/exception/{ApiExceptionHandler,ResourceNotFoundException,DuplicateEmailException}.java` | Centralized API errors |
+| `src/main/java/com/tpross/exception/{InvalidTransferException,TransferConflictException}.java` | Same-account and transfer balance conflicts |
 | `src/main/java/com/tpross/exception/package-info.java` | Exception package documentation |
 | `src/main/java/com/tpross/config/{ApplicationConfig,AccountProperties}.java` | Password encoder and validated account settings |
 | `src/main/java/com/tpross/config/package-info.java` | Configuration package documentation |
@@ -278,6 +349,8 @@ All Java packages are under `com.tpross`.
 | `src/test/java/com/tpross/repository/DomainPersistenceIT.java` | PostgreSQL persistence/constraint integration tests |
 | `src/test/java/com/tpross/controller/UserAccountControllerTest.java` | User/account HTTP contract and error tests |
 | `src/test/java/com/tpross/controller/UserAccountApiIT.java` | Full API flow against disposable PostgreSQL |
+| `src/test/java/com/tpross/controller/TransferControllerTest.java` | Transfer HTTP validation and error contracts |
+| `src/test/java/com/tpross/controller/TransferApiIT.java` | PostgreSQL transfer, rollback, and concurrency tests |
 | `src/test/java/com/tpross/config/AccountPropertiesTest.java` | Starting-balance configuration validation |
 | `postman/README.md` | Endpoint documentation and Postman examples |
 | `postman/TPross.postman_collection.json` | Importable Postman requests with automatic ID capture |

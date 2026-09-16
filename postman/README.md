@@ -1,13 +1,14 @@
-# User and account API
+# User, account, and transfer API
 
 The application exposes the following public development endpoints. Authentication
-and transfers are not implemented. Responses use DTOs, never JPA entities.
+and ownership authorization are not implemented. Responses use DTOs, never JPA entities.
 
 | Method | Path | Success |
 | --- | --- | --- |
 | POST | `/api/users` | 201 Created |
 | POST | `/api/users/{userId}/accounts` | 201 Created, with an account `Location` header |
 | GET | `/api/accounts/{accountId}` | 200 OK |
+| POST | `/api/transfers` | 201 Created, completed transfer DTO |
 
 ## Start locally
 
@@ -34,11 +35,13 @@ balances. Clients cannot choose the starting balance.
 
 Import [TPross.postman_collection.json](TPross.postman_collection.json),
 or create the requests below manually. Set **Authorization: No Auth**. The collection
-has `baseUrl`, `email`, `password`, `userId`, and `accountId` variables. Its response
-scripts save the created IDs automatically. Send requests in the listed order.
+has `baseUrl`, `email`, `password`, `userId`, `accountId`, `recipientEmail`,
+`destinationUserId`, `destinationAccountId`, `amount`, and `transactionId` variables.
+Its response scripts save the created IDs automatically. Send requests in the listed order.
 
 `baseUrl` defaults to `http://localhost:8080`. Adjust it if using `SERVER_PORT=8081`.
 Change `email` before creating another user; repeating an existing email returns 409.
+Also change `recipientEmail` when repeating recipient creation.
 
 ## 1. Create a user
 
@@ -108,6 +111,54 @@ Use the account ID from the second response. A successful response is **200 OK**
 the same account DTO structure shown above. It contains `userId`, not a nested user
 entity, email, password, or hash.
 
+## 4–5. Create the recipient and their account
+
+The collection's fourth request creates another user using `recipientEmail` (default
+`bob@example.com`) and the development `password`, saving `destinationUserId`.
+Its fifth request creates an account for that user and saves `destinationAccountId`.
+The original `accountId` remains the source account. These are the same user/account
+endpoints documented above. You may instead supply two existing account IDs.
+
+## 6. Transfer money
+
+- Method: **POST**
+- URL: `{{baseUrl}}/api/transfers`
+- Header: `Content-Type: application/json`
+- Body: **raw → JSON**
+
+```json
+{
+  "sourceAccountId": {{accountId}},
+  "destinationAccountId": {{destinationAccountId}},
+  "amount": {{amount}}
+}
+```
+
+`amount` defaults to `25.50`. Postman substitutes these numeric variables before
+sending the request. Example **201 Created** response:
+
+```json
+{
+  "transactionId": 1,
+  "sourceAccountId": 1,
+  "destinationAccountId": 2,
+  "amount": 25.50,
+  "status": "COMPLETED",
+  "timestamp": "2026-10-01T12:02:00Z"
+}
+```
+
+With two accounts initially at `1000.00`, this leaves the source at `974.50` and the
+destination at `1025.50`. Use `GET /api/accounts/{id}` to check each balance. The
+collection captures `transactionId`; there is no transfer retrieval endpoint yet.
+
+The amount must be positive, fit 17 integer digits and two decimal places, and not
+exceed the source balance. Both accounts must exist and differ. All three database
+changes (debit, credit, transaction record) commit together or roll back together.
+Account row locks also protect simultaneous transfers. A failed transfer leaves
+balances unchanged and no committed transaction record. A repeated successful POST
+performs another transfer; idempotency is not implemented.
+
 ## Errors
 
 Central `@ControllerAdvice` returns `application/problem+json` with `type`, `title`,
@@ -117,9 +168,9 @@ these error responses.
 
 | Status | Example |
 | --- | --- |
-| 400 Bad Request | Invalid email/password, malformed or unsupported JSON fields, nonpositive/noninteger IDs |
-| 404 Not Found | User does not exist when creating an account; account does not exist when retrieving |
-| 409 Conflict | Duplicate email, including a database uniqueness race |
+| 400 Bad Request | Invalid fields/amounts, same transfer account, malformed or unsupported JSON, nonpositive/noninteger IDs |
+| 404 Not Found | Requested user or account does not exist |
+| 409 Conflict | Duplicate email, insufficient funds, destination balance overflow, or a locking conflict |
 | 415 Unsupported Media Type | Sending user input as plain text instead of JSON |
 | 500 Internal Server Error | Unexpected internal failure; response contains a generic message |
 
@@ -138,7 +189,7 @@ Example invalid-email response:
 }
 ```
 
-The security layer still denies unrelated routes. CSRF is bypassed for the two
+The security layer still denies unrelated routes. CSRF is bypassed for the three
 public creation routes so they can be called without a session or token in Postman.
 Login and ownership authorization are not implemented at this stage.
 
@@ -151,6 +202,9 @@ Login and ownership authorization are not implemented at this stage.
   responses inside transactions. Retrieval uses a read-only transaction, allowing
   lazy relationships to be accessed without relying on Open Session in View.
 - Repositories handle persistence; the domain models are not exposed through HTTP.
+- `TransferService` validates accounts and balances, locks both rows in ascending ID
+  order, and writes the debit, credit, and completed transaction in one Spring transaction.
+  `rollbackFor = Exception.class` includes checked exceptions in rollback rules.
 
 ```sh
 # Web contracts, configuration validation, and existing domain tests
@@ -163,3 +217,5 @@ Login and ownership authorization are not implemented at this stage.
 The integration suite uses its own PostgreSQL containers, not the Compose database.
 It checks actual password encoding, normalized email uniqueness, configured balances,
 DTO retrieval, missing resources, and rejection of client balance overrides.
+Transfer coverage includes successful transfers, rejection without balance changes,
+rollback after SQL flushes, concurrent debits/credits, and opposite-direction transfers.
