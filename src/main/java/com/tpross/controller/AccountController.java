@@ -2,6 +2,7 @@ package com.tpross.controller;
 
 import com.tpross.dto.AccountResponse;
 import com.tpross.dto.CreateAccountRequest;
+import com.tpross.dto.TransactionHistoryResponse;
 import com.tpross.service.AccountService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Positive;
@@ -33,5 +34,10 @@ public class AccountController {
     @GetMapping("/api/accounts/{accountId}")
     public AccountResponse getAccount(@PathVariable @Positive Long accountId) {
         return accounts.getAccount(accountId);
+    }
+
+    @GetMapping("/api/accounts/{accountId}/transactions")
+    public TransactionHistoryResponse getTransactions(@PathVariable @Positive Long accountId) {
+        return accounts.getTransactions(accountId);
     }
 }

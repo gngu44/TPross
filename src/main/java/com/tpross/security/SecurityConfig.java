@@ -18,7 +18,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(HttpMethod.GET, "/api/health").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/users", "/api/users/*/accounts", "/api/transfers").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/accounts/*").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/accounts/*", "/api/accounts/*/transactions").permitAll()
                         .anyRequest().denyAll())
                 .csrf(csrf -> csrf.ignoringRequestMatchers("/api/users", "/api/users/*/accounts", "/api/transfers"))
                 .formLogin(AbstractHttpConfigurer::disable)

@@ -2,11 +2,16 @@ package com.tpross.service;
 
 import com.tpross.config.AccountProperties;
 import com.tpross.dto.AccountResponse;
+import com.tpross.dto.TransactionHistoryResponse;
+import com.tpross.dto.TransferResponse;
 import com.tpross.exception.ResourceNotFoundException;
 import com.tpross.model.Account;
 import com.tpross.model.User;
 import com.tpross.repository.AccountRepository;
+import com.tpross.repository.TransactionRepository;
 import com.tpross.repository.UserRepository;
+import java.util.List;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,11 +21,14 @@ public class AccountService {
     private final AccountRepository accounts;
     private final UserRepository users;
     private final AccountProperties properties;
+    private final TransactionRepository transactions;
 
-    public AccountService(AccountRepository accounts, UserRepository users, AccountProperties properties) {
+    public AccountService(AccountRepository accounts, UserRepository users, AccountProperties properties,
+            TransactionRepository transactions) {
         this.accounts = accounts;
         this.users = users;
         this.properties = properties;
+        this.transactions = transactions;
     }
 
     @Transactional
@@ -35,6 +43,20 @@ public class AccountService {
     public AccountResponse getAccount(Long accountId) {
         return toResponse(accounts.findById(accountId)
                 .orElseThrow(() -> new ResourceNotFoundException("Account", accountId)));
+    }
+
+    @Transactional(readOnly = true)
+    public TransactionHistoryResponse getTransactions(Long accountId) {
+        if (!accounts.existsById(accountId)) {
+            throw new ResourceNotFoundException("Account", accountId);
+        }
+        List<TransferResponse> history = transactions.findBySourceAccountIdOrDestinationAccountId(accountId, accountId)
+                .stream()
+                .map(transaction -> new TransferResponse(transaction.getId(), transaction.getSourceAccount().getId(),
+                        transaction.getDestinationAccount().getId(), transaction.getAmount(), transaction.getStatus(),
+                        transaction.getCreatedAt()))
+                .toList();
+        return new TransactionHistoryResponse(history);
     }
 
     private AccountResponse toResponse(Account account) {
