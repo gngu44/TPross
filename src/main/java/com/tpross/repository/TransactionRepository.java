@@ -1,11 +1,20 @@
 package com.tpross.repository;
 
+import com.tpross.dto.TransferResponse;
 import com.tpross.model.Transaction;
-import org.springframework.data.jpa.repository.JpaRepository;
-
 import java.util.List;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 public interface TransactionRepository extends JpaRepository<Transaction, Long> {
 
-    List<Transaction> findBySourceAccountIdOrDestinationAccountId(Long sourceAccountId, Long destinationAccountId);
+    @Query("""
+            select new com.tpross.dto.TransferResponse(
+                t.id, t.sourceAccount.id, t.destinationAccount.id, t.amount, t.status, t.createdAt)
+            from Transaction t
+            where t.sourceAccount.id = :accountId or t.destinationAccount.id = :accountId
+            order by t.createdAt desc, t.id desc
+            """)
+    List<TransferResponse> findHistoryByAccountId(@Param("accountId") Long accountId);
 }

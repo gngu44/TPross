@@ -50,12 +50,7 @@ public class AccountService {
         if (!accounts.existsById(accountId)) {
             throw new ResourceNotFoundException("Account", accountId);
         }
-        List<TransferResponse> history = transactions.findBySourceAccountIdOrDestinationAccountId(accountId, accountId)
-                .stream()
-                .map(transaction -> new TransferResponse(transaction.getId(), transaction.getSourceAccount().getId(),
-                        transaction.getDestinationAccount().getId(), transaction.getAmount(), transaction.getStatus(),
-                        transaction.getCreatedAt()))
-                .toList();
+        List<TransferResponse> history = transactions.findHistoryByAccountId(accountId);
         return new TransactionHistoryResponse(history);
     }
 
