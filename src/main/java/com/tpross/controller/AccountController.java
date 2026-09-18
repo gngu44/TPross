@@ -5,12 +5,15 @@ import com.tpross.dto.CreateAccountRequest;
 import com.tpross.dto.TransactionHistoryResponse;
 import com.tpross.service.AccountService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Positive;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
@@ -37,7 +40,9 @@ public class AccountController {
     }
 
     @GetMapping("/api/accounts/{accountId}/transactions")
-    public TransactionHistoryResponse getTransactions(@PathVariable @Positive Long accountId) {
-        return accounts.getTransactions(accountId);
+    public TransactionHistoryResponse getTransactions(@PathVariable @Positive Long accountId,
+            @RequestParam(defaultValue = "0") @Min(0) int page,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) {
+        return accounts.getTransactions(accountId, page, size);
     }
 }

@@ -30,6 +30,11 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger LOG = LoggerFactory.getLogger(ApiExceptionHandler.class);
 
+    @ExceptionHandler(InvalidPaginationException.class)
+    public ResponseEntity<Object> handleInvalidPagination(InvalidPaginationException exception, WebRequest request) {
+        return problem(HttpStatus.BAD_REQUEST, exception.getMessage(), request);
+    }
+
     @ExceptionHandler(InvalidTransferException.class)
     public ResponseEntity<Object> handleInvalidTransfer(InvalidTransferException exception, WebRequest request) {
         return problem(HttpStatus.BAD_REQUEST, exception.getMessage(), request);
@@ -84,9 +89,9 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         } else if (exception instanceof HttpMessageNotReadableException) {
             detail = "Request body must be valid JSON with only supported fields.";
         } else if (exception instanceof MethodArgumentTypeMismatchException) {
-            detail = "Path parameters must be valid integers.";
+            detail = "Request parameters must be valid integers.";
         } else if (exception instanceof HandlerMethodValidationException) {
-            detail = "Path parameters must be positive integers.";
+            detail = "Request parameters failed validation.";
         }
         ProblemDetail problem = createProblem(status, detail, request);
         if (!errors.isEmpty()) {

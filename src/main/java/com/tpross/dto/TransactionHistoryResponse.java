@@ -2,5 +2,5 @@ package com.tpross.dto;
 
 import java.util.List;
 
-public record TransactionHistoryResponse(List<TransferResponse> transactions) {
+public record TransactionHistoryResponse(List<TransferResponse> transactions, int page, int size, boolean hasNext) {
 }

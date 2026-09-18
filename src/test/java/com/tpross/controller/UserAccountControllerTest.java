@@ -3,14 +3,18 @@ package com.tpross.controller;
 import com.tpross.dto.AccountResponse;
 import com.tpross.dto.CreateUserRequest;
 import com.tpross.dto.UserResponse;
+import com.tpross.dto.TransactionHistoryResponse;
+import com.tpross.dto.TransferResponse;
 import com.tpross.exception.DuplicateEmailException;
 import com.tpross.exception.ResourceNotFoundException;
+import com.tpross.model.TransactionStatus;
 import com.tpross.security.SecurityConfig;
 import com.tpross.service.AccountService;
 import com.tpross.service.UserService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
@@ -21,6 +25,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
@@ -156,10 +161,61 @@ class UserAccountControllerTest {
                 .andExpect(jsonPath("$.passwordHash").doesNotExist());
     }
 
+    @Test
+    void retrievesTransactionHistoryWithDefaultPagination() throws Exception {
+        when(accounts.getTransactions(2L, 0, 20)).thenReturn(new TransactionHistoryResponse(
+                List.of(new TransferResponse(3L, 2L, 4L, new BigDecimal("25.50"),
+                        TransactionStatus.COMPLETED, CREATED_AT)), 0, 20, false));
+        mvc.perform(get("/api/accounts/2/transactions"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.transactions[0].transactionId").value(3))
+                .andExpect(jsonPath("$.transactions[0].sourceAccountId").value(2))
+                .andExpect(jsonPath("$.transactions[0].destinationAccountId").value(4))
+                .andExpect(jsonPath("$.transactions[0].amount").value(25.50))
+                .andExpect(jsonPath("$.transactions[0].status").value("COMPLETED"))
+                .andExpect(jsonPath("$.transactions[0].timestamp").value(CREATED_AT.toString()))
+                .andExpect(jsonPath("$.transactions[0].sourceAccount").doesNotExist())
+                .andExpect(jsonPath("$.page").value(0))
+                .andExpect(jsonPath("$.size").value(20))
+                .andExpect(jsonPath("$.hasNext").value(false));
+        verify(accounts).getTransactions(2L, 0, 20);
+    }
+
+    @Test
+    void passesExplicitPaginationToService() throws Exception {
+        when(accounts.getTransactions(2L, 1, 100))
+                .thenReturn(new TransactionHistoryResponse(List.of(), 1, 100, false));
+        mvc.perform(get("/api/accounts/2/transactions").param("page", "1").param("size", "100"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.page").value(1))
+                .andExpect(jsonPath("$.size").value(100));
+        verify(accounts).getTransactions(2L, 1, 100);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"page,-1", "page,abc", "page,1.5", "page,2147483648",
+            "size,0", "size,-1", "size,101", "size,abc", "size,1.5", "size,2147483648"})
+    void rejectsInvalidPaginationBeforeCallingService(String parameter, String value) throws Exception {
+        mvc.perform(get("/api/accounts/2/transactions").param(parameter, value))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.instance").value("/api/accounts/2/transactions"));
+        verifyNoInteractions(accounts);
+    }
+
+    @Test
+    void missingHistoryAccountReturns404() throws Exception {
+        when(accounts.getTransactions(99L, 0, 20)).thenThrow(new ResourceNotFoundException("Account", 99L));
+        mvc.perform(get("/api/accounts/99/transactions"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.detail").value("Account 99 was not found."));
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"0", "-1", "abc", "9223372036854775808"})
     void rejectsInvalidPathIds(String id) throws Exception {
         mvc.perform(get("/api/accounts/" + id)).andExpect(status().isBadRequest());
+        mvc.perform(get("/api/accounts/" + id + "/transactions")).andExpect(status().isBadRequest());
         mvc.perform(post("/api/users/" + id + "/accounts")).andExpect(status().isBadRequest());
         verifyNoInteractions(accounts);
     }
