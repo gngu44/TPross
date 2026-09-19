@@ -9,11 +9,19 @@ import com.tpross.model.User;
 import com.tpross.repository.AccountRepository;
 import com.tpross.repository.TransactionRepository;
 import com.tpross.repository.UserRepository;
+import jakarta.persistence.EntityManagerFactory;
+import org.hibernate.SessionFactory;
+import org.hibernate.resource.jdbc.spi.StatementInspector;
+import org.hibernate.stat.Statistics;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.orm.jpa.HibernatePropertiesCustomizer;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -25,7 +33,10 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -33,11 +44,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(properties = {
-        "spring.jpa.hibernate.ddl-auto=create"
+        "spring.jpa.hibernate.ddl-auto=create",
+        "spring.jpa.properties.hibernate.generate_statistics=true"
 })
 @AutoConfigureMockMvc
 @Testcontainers
+@Import(AccountTransactionHistoryIT.SqlCaptureConfiguration.class)
 class AccountTransactionHistoryIT {
+
+    private static final List<String> SQL = new CopyOnWriteArrayList<>();
 
     @Container
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17");
@@ -61,12 +76,15 @@ class AccountTransactionHistoryIT {
     private TransactionRepository transactions;
     @Autowired
     private JdbcTemplate jdbc;
+    @Autowired
+    private EntityManagerFactory entityManagerFactory;
 
     @BeforeEach
     void clearDisposableDatabase() {
         jdbc.update("delete from transactions");
         jdbc.update("delete from accounts");
         jdbc.update("delete from users");
+        resetMeasurements();
     }
 
     @Test
@@ -100,12 +118,13 @@ class AccountTransactionHistoryIT {
     }
 
     @Test
-    void defaultsToTwentyRowsAndReportsTheNextPage() throws Exception {
+    void defaultsToTwentyRowsWithoutLoadingEntitiesJoiningAccountsOrCountingHistory() throws Exception {
         Account owner = account();
         Account other = account();
         for (int i = 0; i < 21; i++) {
             transaction(owner, other, "1.00", TransactionStatus.COMPLETED, "2026-09-03T12:00:00Z");
         }
+        resetMeasurements();
         mvc.perform(get("/api/accounts/" + owner.getId() + "/transactions"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.transactions.length()").value(20))
@@ -114,6 +133,16 @@ class AccountTransactionHistoryIT {
                 .andExpect(jsonPath("$.hasNext").value(true))
                 .andExpect(jsonPath("$.transactions[0].sourceAccount").doesNotExist())
                 .andExpect(jsonPath("$.transactions[0].destinationAccount").doesNotExist());
+
+        assertThat(statistics().getPrepareStatementCount()).isEqualTo(2); // Existence check + one bounded history query.
+        assertThat(statistics().getEntityLoadCount()).isZero();
+        assertThat(statistics().getEntityFetchCount()).isZero();
+        assertThat(statistics().getCollectionFetchCount()).isZero();
+        assertThat(SQL).hasSize(2);
+        assertThat(SQL).filteredOn(sql -> sql.contains(" from transactions ")).singleElement()
+                .satisfies(sql -> assertThat(sql)
+                        .contains("source_account_id", "destination_account_id", "created_at desc", ".id desc", "fetch first")
+                        .doesNotContain(" join ", "count(", "password_hash"));
 
         JsonNode next = history(owner, 1, 20);
         assertThat(next.get("transactions").size()).isEqualTo(1);
@@ -140,9 +169,20 @@ class AccountTransactionHistoryIT {
     }
 
     @Test
-    void missingAccountReturns404() throws Exception {
+    void missingAccountReturns404WithoutQueryingHistory() throws Exception {
+        resetMeasurements();
         mvc.perform(get("/api/accounts/" + Long.MAX_VALUE + "/transactions"))
                 .andExpect(status().isNotFound());
+        assertThat(statistics().getPrepareStatementCount()).isEqualTo(1);
+        assertThat(SQL).noneMatch(sql -> sql.contains(" from transactions "));
+    }
+
+    @Test
+    void paginationOffsetOverflowReturns400BeforeDatabaseAccess() throws Exception {
+        resetMeasurements();
+        mvc.perform(get("/api/accounts/1/transactions").param("page", "2147483647").param("size", "100"))
+                .andExpect(status().isBadRequest());
+        assertThat(statistics().getPrepareStatementCount()).isZero();
     }
 
     private JsonNode history(Account account, int page, int size) throws Exception {
@@ -166,4 +206,23 @@ class AccountTransactionHistoryIT {
         return id;
     }
 
+    private Statistics statistics() {
+        return entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
+    }
+
+    private void resetMeasurements() {
+        statistics().clear();
+        SQL.clear();
+    }
+
+    @TestConfiguration(proxyBeanMethods = false)
+    static class SqlCaptureConfiguration {
+        @Bean
+        HibernatePropertiesCustomizer captureSql() {
+            return properties -> properties.put("hibernate.session_factory.statement_inspector", (StatementInspector) sql -> {
+                SQL.add(sql.toLowerCase(Locale.ROOT));
+                return sql;
+            });
+        }
+    }
 }
