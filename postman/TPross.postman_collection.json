@@ -57,6 +57,16 @@
       "key": "transactionId",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "page",
+      "value": "0",
+      "type": "string"
+    },
+    {
+      "key": "size",
+      "value": "20",
+      "type": "string"
     }
   ],
   "item": [
@@ -314,6 +324,55 @@
               "  const transfer = pm.response.json();",
               "  pm.collectionVariables.set('transactionId', String(transfer.transactionId));",
               "  pm.test('Transfer completed', function () { pm.expect(transfer.status).to.eql('COMPLETED'); });",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Get account transaction history",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/accounts/{{accountId}}/transactions?page={{page}}&size={{size}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "accounts",
+            "{{accountId}}",
+            "transactions"
+          ],
+          "query": [
+            {
+              "key": "page",
+              "value": "{{page}}"
+            },
+            {
+              "key": "size",
+              "value": "{{size}}"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+              "if (pm.response.code === 200) {",
+              "  const history = pm.response.json();",
+              "  pm.test('Paginated history', function () {",
+              "    pm.expect(history.transactions).to.be.an('array');",
+              "    pm.expect(history.page).to.eql(Number(pm.collectionVariables.get('page')));",
+              "    pm.expect(history.size).to.eql(Number(pm.collectionVariables.get('size')));",
+              "    pm.expect(history.hasNext).to.be.a('boolean');",
+              "  });",
               "}"
             ]
           }

@@ -146,7 +146,7 @@ See [Spring Boot's Hibernate initialization documentation](https://docs.spring.i
 
 The TPross entities, repositories, user/account APIs, and atomic transfers are implemented.
 There are no schema migrations yet. Security permits the health
-endpoint and the four API routes below. The creation routes are exempt from CSRF
+endpoint and the five API routes below. The creation routes are exempt from CSRF
 checks for public development API access; other routes are denied. Authentication
 is not implemented; form login and HTTP Basic are disabled.
 
@@ -157,6 +157,7 @@ is not implemented; form login and HTTP Basic are disabled.
 | POST | `/api/users` | 201, public user DTO; request contains email and password |
 | POST | `/api/users/{userId}/accounts` | 201, account DTO and Location header; no body or `{}` |
 | GET | `/api/accounts/{accountId}` | 200, account DTO |
+| GET | `/api/accounts/{accountId}/transactions` | 200, paginated incoming/outgoing history |
 | POST | `/api/transfers` | 201, completed transfer DTO |
 
 Controllers call transactional services, which use repositories. Input DTOs are
@@ -173,6 +174,68 @@ Central `@ControllerAdvice` produces structured Problem Details responses: 400 f
 invalid input, 404 for missing resources, and 409 for duplicate emails or data conflicts.
 See [API usage and Postman examples](postman/README.md), or import the
 [Postman collection](postman/TPross.postman_collection.json).
+
+## Account transaction history
+
+Read both incoming and outgoing transactions for an existing account:
+
+```http
+GET /api/accounts/1/transactions
+GET /api/accounts/1/transactions?page=0&size=2
+GET /api/accounts/1/transactions?page=1&size=2
+```
+
+The first request defaults to `page=0&size=20`. Page numbers are zero-based; sizes
+must be between 1 and 100. Results are always ordered by `createdAt DESC, id DESC`,
+so equal timestamps have a deterministic order. All stored statuses are included.
+The source ID identifies an outgoing transaction; the destination ID identifies an
+incoming transaction for the requested account. Amounts remain positive.
+
+Example `200 OK` for `page=0&size=2` (assuming more than two matching records):
+
+```json
+{
+  "transactions": [
+    {
+      "transactionId": 12,
+      "sourceAccountId": 2,
+      "destinationAccountId": 1,
+      "amount": 10.00,
+      "status": "COMPLETED",
+      "timestamp": "2026-10-01T12:10:00Z"
+    },
+    {
+      "transactionId": 11,
+      "sourceAccountId": 1,
+      "destinationAccountId": 2,
+      "amount": 25.50,
+      "status": "COMPLETED",
+      "timestamp": "2026-10-01T12:05:00Z"
+    }
+  ],
+  "page": 0,
+  "size": 2,
+  "hasNext": true
+}
+```
+
+Increase `page` while `hasNext` is true to read the remaining history. An existing
+account with no history returns `{"transactions":[],"page":0,"size":20,"hasNext":false}`.
+Pages beyond the available records also return an empty list with `hasNext: false`.
+A missing account returns `404`; invalid IDs, pagination values, or a `page * size`
+offset above JPA's integer limit return `400` Problem Details.
+
+The repository projects only the six response fields directly into `TransferResponse`.
+It filters on source/destination foreign-key IDs, using the existing indexed columns;
+it does not fetch transaction entities, account entities, user entities, or joins to
+related tables. Spring Data `Slice` fetches at most `size + 1` rows to determine
+`hasNext`, avoiding a total-history count query. A separate account-existence query
+distinguishes missing accounts from empty histories. PostgreSQL tests verify two SQL
+statements for a successful request and zero entity or relationship loads.
+
+No total count is returned. Pagination uses offsets; newly inserted transfers between
+requests can shift later pages. This endpoint follows the existing public development
+access policy; ownership authorization is not implemented.
 
 ## Atomic peer-to-peer transfers
 
@@ -289,7 +352,7 @@ not implemented.
 java -jar target/tpross-0.0.1-SNAPSHOT.jar --spring.profiles.active=local
 ```
 
-The default tests cover health, user/account, and transfer HTTP contracts, security filters,
+The default tests cover health, user/account, transfer, and history HTTP contracts, security filters,
 configuration validation, monetary/input validation, and password-hash serialization.
 They do not require a database.
 Running the packaged application requires PostgreSQL and the exported variables above.
@@ -302,9 +365,11 @@ To also run the persistence integration tests with Docker running:
 
 Testcontainers starts a disposable PostgreSQL 17 container and supplies its connection
 settings; `.env` and the Compose database are not used. Failsafe runs `DomainPersistenceIT`,
-`UserAccountApiIT`, and `TransferApiIT` to verify persistence constraints and API flows.
+`UserAccountApiIT`, `TransferApiIT`, and `AccountTransactionHistoryIT` to verify persistence constraints and API flows.
 Transfer tests verify rejection without writes, rollback after real SQL flushes,
 simultaneous debits/credits, and opposite-direction transfers under actual lock contention.
+History tests check both directions, ordering ties, pagination, empty/missing accounts,
+and SQL efficiency without entity loading or a total-history count.
 Test tables are created/dropped only inside disposable
 databases. The integration profile requires Docker and fails if it is unavailable.
 
@@ -330,6 +395,7 @@ All Java packages are under `com.tpross`.
 | `src/main/java/com/tpross/controller/{User,Account}Controller.java` | User/account REST endpoints |
 | `src/main/java/com/tpross/controller/TransferController.java` | Public transfer creation endpoint |
 | `src/main/java/com/tpross/dto/{CreateTransferRequest,TransferResponse}.java` | Validated transfer input and public result |
+| `src/main/java/com/tpross/dto/TransactionHistoryResponse.java` | History entries and pagination metadata |
 | `src/main/java/com/tpross/dto/{CreateUserRequest,CreateAccountRequest,UserResponse,AccountResponse}.java` | Validated input and public output contracts |
 | `src/main/java/com/tpross/service/{User,Account}Service.java` | Transactional user/account operations |
 | `src/main/java/com/tpross/service/TransferService.java` | Atomic debit, credit, and transaction recording with ordered row locks |
@@ -341,6 +407,7 @@ All Java packages are under `com.tpross`.
 | `src/main/java/com/tpross/model/TransactionStatus.java` | Named transaction statuses |
 | `src/main/java/com/tpross/exception/{ApiExceptionHandler,ResourceNotFoundException,DuplicateEmailException}.java` | Centralized API errors |
 | `src/main/java/com/tpross/exception/{InvalidTransferException,TransferConflictException}.java` | Same-account and transfer balance conflicts |
+| `src/main/java/com/tpross/exception/InvalidPaginationException.java` | Invalid page sizes or unsupported offsets |
 | `src/main/java/com/tpross/exception/package-info.java` | Exception package documentation |
 | `src/main/java/com/tpross/config/{ApplicationConfig,AccountProperties}.java` | Password encoder and validated account settings |
 | `src/main/java/com/tpross/config/package-info.java` | Configuration package documentation |
@@ -351,6 +418,7 @@ All Java packages are under `com.tpross`.
 | `src/test/java/com/tpross/controller/UserAccountApiIT.java` | Full API flow against disposable PostgreSQL |
 | `src/test/java/com/tpross/controller/TransferControllerTest.java` | Transfer HTTP validation and error contracts |
 | `src/test/java/com/tpross/controller/TransferApiIT.java` | PostgreSQL transfer, rollback, and concurrency tests |
+| `src/test/java/com/tpross/controller/AccountTransactionHistoryIT.java` | History ordering, pagination, and query-efficiency checks |
 | `src/test/java/com/tpross/config/AccountPropertiesTest.java` | Starting-balance configuration validation |
 | `postman/README.md` | Endpoint documentation and Postman examples |
 | `postman/TPross.postman_collection.json` | Importable Postman requests with automatic ID capture |

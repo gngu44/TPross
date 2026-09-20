@@ -8,6 +8,7 @@ and ownership authorization are not implemented. Responses use DTOs, never JPA e
 | POST | `/api/users` | 201 Created |
 | POST | `/api/users/{userId}/accounts` | 201 Created, with an account `Location` header |
 | GET | `/api/accounts/{accountId}` | 200 OK |
+| GET | `/api/accounts/{accountId}/transactions` | 200 OK, paginated incoming/outgoing history |
 | POST | `/api/transfers` | 201 Created, completed transfer DTO |
 
 ## Start locally
@@ -36,7 +37,7 @@ balances. Clients cannot choose the starting balance.
 Import [TPross.postman_collection.json](TPross.postman_collection.json),
 or create the requests below manually. Set **Authorization: No Auth**. The collection
 has `baseUrl`, `email`, `password`, `userId`, `accountId`, `recipientEmail`,
-`destinationUserId`, `destinationAccountId`, `amount`, and `transactionId` variables.
+`destinationUserId`, `destinationAccountId`, `amount`, `transactionId`, `page`, and `size` variables.
 Its response scripts save the created IDs automatically. Send requests in the listed order.
 
 `baseUrl` defaults to `http://localhost:8080`. Adjust it if using `SERVER_PORT=8081`.
@@ -150,7 +151,7 @@ sending the request. Example **201 Created** response:
 
 With two accounts initially at `1000.00`, this leaves the source at `974.50` and the
 destination at `1025.50`. Use `GET /api/accounts/{id}` to check each balance. The
-collection captures `transactionId`; there is no transfer retrieval endpoint yet.
+collection captures `transactionId`; there is no individual transfer-by-ID endpoint yet.
 
 The amount must be positive, fit 17 integer digits and two decimal places, and not
 exceed the source balance. Both accounts must exist and differ. All three database
@@ -158,6 +159,53 @@ changes (debit, credit, transaction record) commit together or roll back togethe
 Account row locks also protect simultaneous transfers. A failed transfer leaves
 balances unchanged and no committed transaction record. A repeated successful POST
 performs another transfer; idempotency is not implemented.
+
+## 7. Read an account's transaction history
+
+- Method: **GET**
+- URL: `{{baseUrl}}/api/accounts/{{accountId}}/transactions?page={{page}}&size={{size}}`
+- Body: **none**
+
+The collection defaults to `page=0` and `size=20`. Use `destinationAccountId` instead
+of `accountId` to view the recipient's history. The query includes both incoming and
+outgoing transactions, newest timestamp first, with transaction ID descending as a
+tie-breaker. Amounts stay positive; source/destination IDs indicate direction.
+
+Example requests:
+
+```http
+GET http://localhost:8080/api/accounts/1/transactions
+GET http://localhost:8080/api/accounts/1/transactions?page=0&size=2
+GET http://localhost:8080/api/accounts/1/transactions?page=1&size=2
+```
+
+Example **200 OK** after the collection's single transfer:
+
+```json
+{
+  "transactions": [
+    {
+      "transactionId": 1,
+      "sourceAccountId": 1,
+      "destinationAccountId": 2,
+      "amount": 25.50,
+      "status": "COMPLETED",
+      "timestamp": "2026-10-01T12:02:00Z"
+    }
+  ],
+  "page": 0,
+  "size": 20,
+  "hasNext": false
+}
+```
+
+Actual IDs and timestamps vary. Increase `page` while `hasNext` is true. Sizes range
+from 1 to 100; page numbers start at zero. Existing accounts without transactions
+and pages beyond the last result return an empty `transactions` array and
+`hasNext: false`. Missing accounts return 404. Invalid page/size values return 400.
+The response does not include totals; the database retrieves only the selected DTO
+fields and one extra row to determine whether another page exists. Offset pages can
+shift if new transactions arrive between requests.
 
 ## Errors
 
@@ -168,7 +216,7 @@ these error responses.
 
 | Status | Example |
 | --- | --- |
-| 400 Bad Request | Invalid fields/amounts, same transfer account, malformed or unsupported JSON, nonpositive/noninteger IDs |
+| 400 Bad Request | Invalid fields/amounts, same transfer account, malformed JSON, invalid IDs or pagination |
 | 404 Not Found | Requested user or account does not exist |
 | 409 Conflict | Duplicate email, insufficient funds, destination balance overflow, or a locking conflict |
 | 415 Unsupported Media Type | Sending user input as plain text instead of JSON |
@@ -201,6 +249,8 @@ Login and ownership authorization are not implemented at this stage.
 - `AccountService` verifies the owner, initializes the balance, and maps account
   responses inside transactions. Retrieval uses a read-only transaction, allowing
   lazy relationships to be accessed without relying on Open Session in View.
+- History uses a read-only service method and a paginated repository DTO projection:
+  one account-existence query and one history query, without loading related entities.
 - Repositories handle persistence; the domain models are not exposed through HTTP.
 - `TransferService` validates accounts and balances, locks both rows in ascending ID
   order, and writes the debit, credit, and completed transaction in one Spring transaction.
@@ -219,3 +269,5 @@ It checks actual password encoding, normalized email uniqueness, configured bala
 DTO retrieval, missing resources, and rejection of client balance overrides.
 Transfer coverage includes successful transfers, rejection without balance changes,
 rollback after SQL flushes, concurrent debits/credits, and opposite-direction transfers.
+History coverage checks incoming/outgoing records, timestamp ties, pagination, missing
+accounts, and the absence of entity loads, joins, and a total-history count query.
